@@ -3,100 +3,128 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Audio Converter (Stable)</title>
+    <title>Audio Converter Debug</title>
     <style>
-        body { font-family: -apple-system, sans-serif; text-align: center; padding: 20px; background: #f0f2f5; }
-        .container { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-width: 400px; margin: 0 auto; }
-        #status { margin: 20px 0; padding: 10px; border-radius: 8px; background: #eee; font-weight: bold; }
-        button { background: #0070f3; color: white; border: none; padding: 12px 24px; border-radius: 7px; font-size: 16px; width: 100%; cursor: pointer; }
-        button:disabled { background: #ccc; }
-        input[type="file"] { margin-bottom: 20px; width: 100%; }
-        audio { width: 100%; margin-top: 20px; }
-        .download-btn { display: none; margin-top: 15px; color: #0070f3; text-decoration: none; font-weight: bold; }
+        body { font-family: -apple-system, sans-serif; text-align: center; padding: 20px; background: #121212; color: white; }
+        .box { border: 1px solid #333; padding: 20px; border-radius: 15px; background: #1e1e1e; max-width: 400px; margin: 0 auto; }
+        #status { margin: 15px 0; font-weight: bold; color: #00d1b2; }
+        #debug-log { 
+            text-align: left; 
+            background: #000; 
+            color: #0f0; 
+            font-family: monospace; 
+            font-size: 11px; 
+            padding: 10px; 
+            border-radius: 5px; 
+            height: 150px; 
+            overflow-y: scroll; 
+            margin-top: 20px;
+            border: 1px solid #444;
+        }
+        button { background: #00d1b2; color: #000; border: none; padding: 15px; border-radius: 8px; width: 100%; font-weight: bold; }
+        button:disabled { background: #444; color: #777; }
+        input { margin-bottom: 20px; width: 100%; }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <h2>WAV to MP3</h2>
-    <p style="font-size: 0.9em; color: #666;">Browser-based conversion (No upload)</p>
-
-    <div id="status">Loading Engine...</div>
+<div class="box">
+    <h2>Converter v6</h2>
+    <div id="status">INITIALIZING...</div>
 
     <input type="file" id="uploader" accept="audio/wav">
-    <button id="convertBtn" disabled>Convert to MP3</button>
+    <button id="convertBtn" disabled>CONVERT TO MP3</button>
     
-    <audio id="player" controls style="display:none;"></audio>
-    <a id="downloadLink" class="download-btn">Download MP3</a>
+    <div id="debug-log">Log started...<br></div>
+    <div id="output"></div>
 </div>
 
 <script type="module">
-    // We use the 'ffmpeg' and 'util' packages from unpkg
     import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.7/dist/esm/index.js';
     import { fetchFile, toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
 
+    const logEl = document.getElementById('debug-log');
     const status = document.getElementById('status');
     const convertBtn = document.getElementById('convertBtn');
-    const uploader = document.getElementById('uploader');
-    const player = document.getElementById('player');
-    const downloadLink = document.getElementById('downloadLink');
 
-    const ffmpeg = new FFmpeg();
+    function log(msg) {
+        console.log(msg);
+        logEl.innerHTML += "> " + msg + "<br>";
+        logEl.scrollTop = logEl.scrollHeight;
+    }
 
-    async function load() {
+    async function init() {
+        log("App started");
+        const ffmpeg = new FFmpeg();
+
         try {
-            // We point to the 'ffmpeg-core' version that doesn't use SharedArrayBuffer
-            const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm'; 
-            // Note: If 'core-mt' fails, we fallback to standard 'core'
-            const coreURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js';
-            const wasmURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm';
+            const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+            const workerURL = 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.7/dist/esm/worker.js';
 
+            log("Fetching core.js...");
+            const coreJS = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+            log("Core.js fetched.");
+
+            log("Fetching wasm (30MB)...");
+            // This is usually where mobile fails due to timeout or memory
+            const coreWasm = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+            log("Wasm fetched.");
+
+            log("Fetching worker...");
+            const workerJS = await toBlobURL(workerURL, 'text/javascript');
+            log("Worker fetched.");
+
+            log("Calling ffmpeg.load()...");
             await ffmpeg.load({
-                coreURL: await toBlobURL(coreURL, 'text/javascript'),
-                wasmURL: await toBlobURL(wasmURL, 'application/wasm'),
+                coreURL: coreJS,
+                wasmURL: coreWasm,
+                workerURL: workerJS,
             });
 
-            status.innerText = "Ready to Convert";
-            status.style.color = "green";
+            log("FFmpeg loaded successfully!");
+            status.innerText = "READY";
             convertBtn.disabled = false;
+
+            setupConversion(ffmpeg);
         } catch (e) {
-            status.innerText = "Error: " + e.message;
-            status.style.color = "red";
+            log("FATAL ERROR: " + e.message);
+            status.innerText = "CRASHED";
         }
     }
 
-    convertBtn.addEventListener('click', async () => {
-        if (!uploader.files[0]) return;
-        
-        const file = uploader.files[0];
-        convertBtn.disabled = true;
-        status.innerText = "Converting... (Slow version)";
+    function setupConversion(ffmpeg) {
+        const uploader = document.getElementById('uploader');
+        convertBtn.onclick = async () => {
+            if (!uploader.files[0]) return;
+            convertBtn.disabled = true;
+            status.innerText = "CONVERTING...";
+            log("Starting conversion...");
 
-        // 1. Write file to memory
-        await ffmpeg.writeFile('input.wav', await fetchFile(file));
+            try {
+                const file = uploader.files[0];
+                await ffmpeg.writeFile('input.wav', await fetchFile(file));
+                log("File written to memory.");
 
-        // 2. Run conversion (Single-threaded)
-        // -b:a 128k sets the bitrate for smaller size
-        await ffmpeg.exec(['-i', 'input.wav', '-b:a', '128k', 'output.mp3']);
+                await ffmpeg.exec(['-i', 'input.wav', '-b:a', '128k', 'output.mp3']);
+                log("FFmpeg execution finished.");
 
-        // 3. Read the result
-        const data = await ffmpeg.readFile('output.mp3');
-        const url = URL.createObjectURL(new Blob([data.buffer], { type: 'audio/mp3' }));
+                const data = await ffmpeg.readFile('output.mp3');
+                const url = URL.createObjectURL(new Blob([data.buffer], { type: 'audio/mp3' }));
+                
+                document.getElementById('output').innerHTML = `
+                    <audio src="${url}" controls></audio><br>
+                    <a href="${url}" download="converted.mp3" style="color:#00d1b2; display:block; margin-top:10px;">Download MP3</a>
+                `;
+                status.innerText = "SUCCESS";
+                log("Conversion complete.");
+            } catch (err) {
+                log("Conversion error: " + err.message);
+            }
+            convertBtn.disabled = false;
+        };
+    }
 
-        // 4. Show results
-        player.src = url;
-        player.style.display = 'block';
-        downloadLink.href = url;
-        downloadLink.download = file.name.replace('.wav', '.mp3');
-        downloadLink.style.display = 'block';
-        downloadLink.innerText = "Save MP3 File";
-        
-        status.innerText = "Finished!";
-        convertBtn.disabled = false;
-    });
-
-    load();
+    init();
 </script>
-
 </body>
 </html>
