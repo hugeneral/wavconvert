@@ -3,82 +3,117 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WAV to MP3 Converter</title>
-    <!-- Cross-origin isolation for GitHub Pages -->
+    <title>Audio Converter Debug</title>
+    <!-- Service Worker to enable SharedArrayBuffer on GitHub Pages -->
     <script src="https://cdn.jsdelivr.net/gh/gzuidhof/coi-serviceworker@latest/coi-serviceworker.min.js"></script>
     <style>
-        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 50px; }
-        #log { margin-top: 20px; color: #555; font-size: 0.9em; }
-        .controls { margin: 20px 0; }
+        body { font-family: sans-serif; text-align: center; padding: 20px; background: #f4f4f9; }
+        .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: inline-block; max-width: 90%; }
+        #status-box { margin: 15px 0; padding: 10px; border-radius: 5px; background: #eee; font-size: 0.8em; text-align: left; }
+        .ready { color: green; font-weight: bold; }
+        .error { color: red; }
+        .loading { color: orange; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
     </style>
 </head>
 <body>
-    <h1>WAV to MP3 Converter</h1>
-    <p>Files are processed locally in your browser and never uploaded.</p>
 
-    <div class="controls">
-        <input type="file" id="uploader" accept="audio/wav">
-        <button id="convertBtn" disabled>Convert to MP3</button>
+<div class="card">
+    <h2>WAV to MP3</h2>
+    
+    <div id="status-box">
+        <div>Checking Isolation: <span id="iso-stat">Waiting...</span></div>
+        <div>Loading Library: <span id="lib-stat">Waiting...</span></div>
     </div>
 
-    <div id="log">Loading FFmpeg...</div>
-    <audio id="player" controls style="display:none;"></audio>
-    <br>
-    <a id="downloadLink" style="display:none;">Download MP3</a>
+    <input type="file" id="uploader" accept="audio/wav" style="margin-bottom: 20px;"><br>
+    <button id="convertBtn" disabled>Convert to MP3</button>
+    
+    <div id="result" style="margin-top: 20px;">
+        <audio id="player" controls style="display:none; width: 100%;"></audio>
+        <br><br>
+        <a id="downloadLink" style="display:none; padding: 10px; background: #007bff; color: white; text-decoration: none; border-radius: 5px;">Download MP3</a>
+    </div>
+</div>
 
-    <script type="module">
-        import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.7/dist/esm/index.js';
-        import { fetchFile, toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
+<script type="module">
+    // Using Specific Stable Versions
+    import { FFmpeg } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.7/dist/esm/index.js';
+    import { fetchFile, toBlobURL } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
 
-        const ffmpeg = new FFmpeg();
-        const convertBtn = document.getElementById('convertBtn');
-        const uploader = document.getElementById('uploader');
-        const log = document.getElementById('log');
-        const player = document.getElementById('player');
-        const downloadLink = document.getElementById('downloadLink');
+    const isoStat = document.getElementById('iso-stat');
+    const libStat = document.getElementById('lib-stat');
+    const convertBtn = document.getElementById('convertBtn');
 
-        async function load() {
+    async function init() {
+        // Step 1: Check for Cross-Origin Isolation
+        if (crossOriginIsolated) {
+            isoStat.innerText = "PASSED";
+            isoStat.className = "ready";
+        } else {
+            isoStat.innerText = "FAILED (Security restriction)";
+            isoStat.className = "error";
+            libStat.innerText = "Cannot load FFmpeg without isolation.";
+            return;
+        }
+
+        // Step 2: Load FFmpeg
+        try {
+            libStat.innerText = "Downloading WASM (30MB)...";
+            libStat.className = "loading";
+            
+            const ffmpeg = new FFmpeg();
             const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+            
             await ffmpeg.load({
                 coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
                 wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
             });
-            log.innerText = 'FFmpeg Ready. Upload a WAV file.';
+
+            libStat.innerText = "READY";
+            libStat.className = "ready";
             convertBtn.disabled = false;
+
+            // Setup Conversion Logic
+            setupConversion(ffmpeg);
+        } catch (err) {
+            libStat.innerText = "ERROR: " + err.message;
+            libStat.className = "error";
+            console.error(err);
         }
+    }
+
+    function setupConversion(ffmpeg) {
+        const uploader = document.getElementById('uploader');
+        const player = document.getElementById('player');
+        const downloadLink = document.getElementById('downloadLink');
 
         convertBtn.addEventListener('click', async () => {
-            const { files } = uploader;
-            if (files.length === 0) return;
-
-            const file = files[0];
-            log.innerText = 'Converting... (This may take a moment)';
+            if (!uploader.files[0]) return alert("Select a file");
+            
             convertBtn.disabled = true;
-
-            // Write the file to FFmpeg's virtual file system
+            libStat.innerText = "Processing Audio...";
+            
+            const file = uploader.files[0];
             await ffmpeg.writeFile('input.wav', await fetchFile(file));
-
-            // Execute the conversion command
-            // -i: input, -b:a: bitrate (128k for small size)
             await ffmpeg.exec(['-i', 'input.wav', '-b:a', '128k', 'output.mp3']);
-
-            // Read the result
+            
             const data = await ffmpeg.readFile('output.mp3');
             const url = URL.createObjectURL(new Blob([data.buffer], { type: 'audio/mp3' }));
-
-            // Update UI
-            player.src = url;
-            player.style.display = 'block';
-            downloadLink.href = url;
-            downloadLink.download = file.name.replace('.wav', '.mp3');
-            downloadLink.innerText = 'Download ' + downloadLink.download;
-            downloadLink.style.display = 'block';
             
-            log.innerText = 'Conversion Complete!';
+            player.src = url;
+            player.style.display = "block";
+            downloadLink.href = url;
+            downloadLink.download = "converted.mp3";
+            downloadLink.style.display = "inline-block";
+            libStat.innerText = "Conversion Finished!";
             convertBtn.disabled = false;
         });
+    }
 
-        load();
-    </script>
+    init();
+</script>
+
 </body>
-
+</html>
