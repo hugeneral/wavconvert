@@ -3,103 +3,123 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Audio Converter v8</title>
+    <title>Audio Converter (Stable)</title>
+    <!-- Lightweight MP3 Encoder -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.all.min.js"></script>
     <style>
         body { font-family: -apple-system, sans-serif; text-align: center; padding: 20px; background: #121212; color: white; }
-        .box { border: 1px solid #333; padding: 25px; border-radius: 15px; background: #1e1e1e; max-width: 400px; margin: 0 auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .box { border: 1px solid #333; padding: 25px; border-radius: 15px; background: #1e1e1e; max-width: 400px; margin: 40px auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
         #status { margin: 20px 0; font-weight: bold; color: #00d1b2; }
-        #log { font-size: 10px; color: #888; text-align: left; height: 120px; overflow-y: auto; background: #000; padding: 10px; border-radius: 5px; margin-top: 20px; font-family: monospace; border: 1px solid #444; }
         button { background: #00d1b2; color: #000; border: none; padding: 15px; border-radius: 8px; width: 100%; font-weight: bold; cursor: pointer; }
         button:disabled { background: #444; color: #777; cursor: not-allowed; }
         input { margin-bottom: 20px; width: 100%; color: #ccc; }
-        audio { width: 100%; margin-top: 20px; }
-        .save-btn { display: inline-block; margin-top: 20px; color: #00d1b2; text-decoration: none; border: 1px solid #00d1b2; padding: 12px 20px; border-radius: 8px; }
+        progress { width: 100%; height: 10px; margin-top: 10px; display: none; }
     </style>
 </head>
 <body>
 
 <div class="box">
-    <h2 style="margin-top:0;">WAV to MP3</h2>
-    <div id="status">INITIALIZING...</div>
+    <h2>WAV to MP3</h2>
+    <p style="color:#888; font-size:0.9em;">Faster, Mobile-Friendly Version</p>
+
+    <div id="status">Select a WAV file to start</div>
 
     <input type="file" id="uploader" accept="audio/wav">
-    <button id="convertBtn" disabled>CONVERT TO MP3</button>
+    <button id="convertBtn">CONVERT TO MP3</button>
+    <progress id="progressBar" value="0" max="100"></progress>
     
     <div id="output"></div>
-    <div id="log">Logs:<br></div>
 </div>
 
-<!-- Load FFmpeg v0.11.6 -->
-<script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
-
 <script>
-    const { createFFmpeg, fetchFile } = FFmpeg;
-    const logEl = document.getElementById('log');
-    const status = document.getElementById('status');
+    const uploader = document.getElementById('uploader');
     const convertBtn = document.getElementById('convertBtn');
-
-    function debug(msg) {
-        console.log(msg);
-        logEl.innerHTML += "> " + msg + "<br>";
-        logEl.scrollTop = logEl.scrollHeight;
-    }
-
-    // CRITICAL: We use 'core-st' (Single Threaded)
-    // This version DOES NOT use SharedArrayBuffer.
-    const ffmpeg = createFFmpeg({ 
-        log: true,
-        corePath: 'https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js'
-    });
-
-    async function start() {
-        try {
-            debug("Loading Single-Threaded Engine...");
-            await ffmpeg.load();
-            debug("Engine Loaded Successfully!");
-            status.innerText = "READY";
-            convertBtn.disabled = false;
-        } catch (e) {
-            debug("ERROR: " + e.message);
-            status.innerText = "LOAD FAILED";
-            status.style.color = "red";
-        }
-    }
+    const status = document.getElementById('status');
+    const progressBar = document.getElementById('progressBar');
 
     convertBtn.onclick = async () => {
-        const file = document.getElementById('uploader').files[0];
-        if (!file) return;
+        const file = uploader.files[0];
+        if (!file) return alert("Select a file first");
 
         convertBtn.disabled = true;
-        status.innerText = "CONVERTING...";
-        debug("Processing " + file.name);
+        status.innerText = "Reading file...";
+        progressBar.style.display = "block";
 
         try {
-            // Write file to virtual memory
-            ffmpeg.FS('writeFile', 'input.wav', await fetchFile(file));
-            debug("File loaded. Converting to MP3 (128kbps)...");
+            // 1. Decode the WAV file using the browser's built-in AudioContext
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const arrayBuffer = await file.arrayBuffer();
+            const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
-            // Execute FFmpeg
-            await ffmpeg.run('-i', 'input.wav', '-b:a', '128k', 'output.mp3');
-            debug("Conversion Finished!");
+            status.innerText = "Encoding MP3...";
+            
+            // 2. Setup the LAME encoder
+            const channels = audioBuffer.numberOfChannels;
+            const sampleRate = audioBuffer.sampleRate;
+            const mp3encoder = new lamejs.Mp3Encoder(channels, sampleRate, 128);
+            
+            const mp3Data = [];
+            const sampleBlockSize = 1152; // standard for MP3
 
-            // Read the result from virtual memory
-            const data = ffmpeg.FS('readFile', 'output.mp3');
-            const url = URL.createObjectURL(new Blob([data.buffer], { type: 'audio/mp3' }));
+            // Support both Mono and Stereo
+            if (channels === 2) {
+                const left = audioBuffer.getChannelData(0);
+                const right = audioBuffer.getChannelData(1);
+                const leftInt = toInt16(left);
+                const rightInt = toInt16(right);
 
+                for (let i = 0; i < leftInt.length; i += sampleBlockSize) {
+                    const lChunk = leftInt.subarray(i, i + sampleBlockSize);
+                    const rChunk = rightInt.subarray(i, i + sampleBlockSize);
+                    const mp3buf = mp3encoder.encodeBuffer(lChunk, rChunk);
+                    if (mp3buf.length > 0) mp3Data.push(mp3buf);
+                    progressBar.value = (i / leftInt.length) * 100;
+                }
+            } else {
+                const samples = audioBuffer.getChannelData(0);
+                const samplesInt = toInt16(samples);
+                for (let i = 0; i < samplesInt.length; i += sampleBlockSize) {
+                    const chunk = samplesInt.subarray(i, i + sampleBlockSize);
+                    const mp3buf = mp3encoder.encodeBuffer(chunk);
+                    if (mp3buf.length > 0) mp3Data.push(mp3buf);
+                    progressBar.value = (i / samplesInt.length) * 100;
+                }
+            }
+
+            const endBuf = mp3encoder.flush();
+            if (endBuf.length > 0) mp3Data.push(endBuf);
+
+            // 3. Create Download
+            const blob = new Blob(mp3Data, { type: 'audio/mp3' });
+            const url = URL.createObjectURL(blob);
+
+            status.innerText = "FINISHED!";
             document.getElementById('output').innerHTML = `
-                <audio src="${url}" controls></audio>
-                <br>
-                <a href="${url}" download="${file.name.replace('.wav', '.mp3')}" class="save-btn">SAVE MP3 FILE</a>
+                <audio src="${url}" controls style="width:100%; margin-top:20px;"></audio>
+                <br><br>
+                <a href="${url}" download="${file.name.replace('.wav', '.mp3')}" 
+                   style="color:#00d1b2; text-decoration:none; border:1px solid #00d1b2; padding:10px; border-radius:5px; display:inline-block;">
+                   SAVE MP3 FILE
+                </a>
             `;
-            status.innerText = "SUCCESS!";
+
         } catch (err) {
-            debug("CONVERSION ERROR: " + err.message);
-            status.innerText = "ERROR";
+            console.error(err);
+            status.innerText = "Error: " + err.message;
         }
         convertBtn.disabled = false;
+        progressBar.style.display = "none";
     };
 
-    start();
+    // Helper to convert browser float audio to 16-bit integers
+    function toInt16(floatSamples) {
+        const intSamples = new Int16Array(floatSamples.length);
+        for (let i = 0; i < floatSamples.length; i++) {
+            let s = Math.max(-1, Math.min(1, floatSamples[i]));
+            intSamples[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        return intSamples;
+    }
 </script>
 </body>
 </html>
