@@ -3,63 +3,65 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Audio Converter v7</title>
+    <title>Audio Converter v8</title>
     <style>
         body { font-family: -apple-system, sans-serif; text-align: center; padding: 20px; background: #121212; color: white; }
-        .box { border: 1px solid #333; padding: 25px; border-radius: 15px; background: #1e1e1e; max-width: 400px; margin: 0 auto; }
+        .box { border: 1px solid #333; padding: 25px; border-radius: 15px; background: #1e1e1e; max-width: 400px; margin: 0 auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
         #status { margin: 20px 0; font-weight: bold; color: #00d1b2; }
-        #log { font-size: 10px; color: #888; text-align: left; height: 100px; overflow-y: auto; background: #000; padding: 10px; border-radius: 5px; margin-top: 20px; font-family: monospace; }
+        #log { font-size: 10px; color: #888; text-align: left; height: 120px; overflow-y: auto; background: #000; padding: 10px; border-radius: 5px; margin-top: 20px; font-family: monospace; border: 1px solid #444; }
         button { background: #00d1b2; color: #000; border: none; padding: 15px; border-radius: 8px; width: 100%; font-weight: bold; cursor: pointer; }
-        button:disabled { background: #444; color: #777; }
-        input { margin-bottom: 20px; width: 100%; }
+        button:disabled { background: #444; color: #777; cursor: not-allowed; }
+        input { margin-bottom: 20px; width: 100%; color: #ccc; }
         audio { width: 100%; margin-top: 20px; }
+        .save-btn { display: inline-block; margin-top: 20px; color: #00d1b2; text-decoration: none; border: 1px solid #00d1b2; padding: 12px 20px; border-radius: 8px; }
     </style>
 </head>
 <body>
 
 <div class="box">
-    <h2>Converter v7</h2>
-    <div id="status">Loading FFmpeg...</div>
+    <h2 style="margin-top:0;">WAV to MP3</h2>
+    <div id="status">INITIALIZING...</div>
 
     <input type="file" id="uploader" accept="audio/wav">
     <button id="convertBtn" disabled>CONVERT TO MP3</button>
     
     <div id="output"></div>
-    <div id="log"></div>
+    <div id="log">Logs:<br></div>
 </div>
 
-<!-- We use the UMD version of 0.11.6 for better compatibility -->
+<!-- Load FFmpeg v0.11.6 -->
 <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
 
 <script>
     const { createFFmpeg, fetchFile } = FFmpeg;
+    const logEl = document.getElementById('log');
     const status = document.getElementById('status');
     const convertBtn = document.getElementById('convertBtn');
-    const logEl = document.getElementById('log');
 
-    function logger(msg) {
+    function debug(msg) {
         console.log(msg);
-        logEl.innerHTML += msg + "<br>";
+        logEl.innerHTML += "> " + msg + "<br>";
         logEl.scrollTop = logEl.scrollHeight;
     }
 
-    // 1. Initialize FFmpeg with specific core path to avoid security issues
+    // CRITICAL: We use 'core-st' (Single Threaded)
+    // This version DOES NOT use SharedArrayBuffer.
     const ffmpeg = createFFmpeg({ 
         log: true,
-        // We use the single-thread core to avoid SharedArrayBuffer issues
-        corePath: 'https://unpkg.com/@ffmpeg/core@0.11.0/dist/ffmpeg-core.js'
+        corePath: 'https://unpkg.com/@ffmpeg/core-st@0.11.1/dist/ffmpeg-core.js'
     });
 
-    async function init() {
+    async function start() {
         try {
-            logger("Starting load...");
+            debug("Loading Single-Threaded Engine...");
             await ffmpeg.load();
-            logger("Load complete!");
+            debug("Engine Loaded Successfully!");
             status.innerText = "READY";
             convertBtn.disabled = false;
         } catch (e) {
-            logger("LOAD ERROR: " + e.message);
-            status.innerText = "FAILED TO LOAD";
+            debug("ERROR: " + e.message);
+            status.innerText = "LOAD FAILED";
+            status.style.color = "red";
         }
     }
 
@@ -68,36 +70,36 @@
         if (!file) return;
 
         convertBtn.disabled = true;
-        status.innerText = "WORKING...";
-        logger("Reading file...");
+        status.innerText = "CONVERTING...";
+        debug("Processing " + file.name);
 
         try {
-            // Write the file to memory
+            // Write file to virtual memory
             ffmpeg.FS('writeFile', 'input.wav', await fetchFile(file));
-            logger("File written. Converting...");
+            debug("File loaded. Converting to MP3 (128kbps)...");
 
-            // Run command: -i (input) -b:a (bitrate 128k) output.mp3
+            // Execute FFmpeg
             await ffmpeg.run('-i', 'input.wav', '-b:a', '128k', 'output.mp3');
-            logger("Conversion done!");
+            debug("Conversion Finished!");
 
-            // Read the result
+            // Read the result from virtual memory
             const data = ffmpeg.FS('readFile', 'output.mp3');
             const url = URL.createObjectURL(new Blob([data.buffer], { type: 'audio/mp3' }));
 
             document.getElementById('output').innerHTML = `
                 <audio src="${url}" controls></audio>
-                <br><br>
-                <a href="${url}" download="converted.mp3" style="color:#00d1b2; text-decoration:none; border:1px solid #00d1b2; padding:10px; border-radius:5px;">SAVE MP3</a>
+                <br>
+                <a href="${url}" download="${file.name.replace('.wav', '.mp3')}" class="save-btn">SAVE MP3 FILE</a>
             `;
             status.innerText = "SUCCESS!";
         } catch (err) {
-            logger("ERROR: " + err.message);
-            status.innerText = "CONVERSION ERROR";
+            debug("CONVERSION ERROR: " + err.message);
+            status.innerText = "ERROR";
         }
         convertBtn.disabled = false;
     };
 
-    init();
+    start();
 </script>
 </body>
 </html>
