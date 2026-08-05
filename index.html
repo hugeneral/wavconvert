@@ -25,7 +25,7 @@
 
     <div id="status">Select an Audio (.wav) or Video file</div>
 
-    <input type="file" id="uploader" accept="audio/wav,video/*">
+    <input type="file" id="uploader" accept="audio/wav,video/*,.mov,.mp4">
     <button id="convertBtn">PROCESS FILE</button>
     <progress id="progressBar" value="0" max="100"></progress>
     
@@ -46,7 +46,7 @@
         progressBar.style.display = "block";
         document.getElementById('output').innerHTML = '';
 
-        if (file.type.startsWith('video/')) {
+        if (file.type.startsWith('video/') || file.name.match(/\.(mov|mp4|m4v|webm|avi|mkv)$/i)) {
             await compressVideo(file);
         } else {
             await convertAudio(file);
@@ -62,10 +62,21 @@
         
         const video = document.createElement('video');
         video.src = URL.createObjectURL(file);
-        video.muted = false; // keep audio track
+        video.muted = false; // retain audio
         video.playsInline = true;
 
-        await new Promise((resolve) => video.onloadedmetadata = resolve);
+        // Error detection if the video codec is unsupported by the browser
+        const videoLoaded = new Promise((resolve, reject) => {
+            video.onloadedmetadata = () => resolve();
+            video.onerror = () => reject(new Error("Browser cannot play/decode this video format or codec."));
+        });
+
+        try {
+            await videoLoaded;
+        } catch (err) {
+            status.innerText = "Error: " + err.message;
+            return;
+        }
 
         // Halve dimensions
         const width = Math.floor(video.videoWidth / 2);
@@ -81,15 +92,23 @@
         
         // Capture audio track from video element
         const videoStream = video.captureStream ? video.captureStream() : video.mozCaptureStream();
-        const audioTracks = videoStream.getAudioTracks();
-        if (audioTracks.length > 0) {
-            canvasStream.addTrack(audioTracks[0]);
+        if (videoStream) {
+            const audioTracks = videoStream.getAudioTracks();
+            if (audioTracks.length > 0) {
+                canvasStream.addTrack(audioTracks[0]);
+            }
         }
 
-        // Set target bitrate (lower video bitrate = smaller file size)
-        const options = { mimeType: 'video/webm;codecs=vp8,opus', videoBitsPerSecond: 1000000 }; 
+        // Determine supported output format (prefer MP4, fallback to WebM)
+        let options = { mimeType: 'video/mp4;codecs=avc1,mp4a.40.2' };
         if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-            delete options.mimeType; // Fallback to browser defaults if WebM with VP8 isn't supported
+            options = { mimeType: 'video/mp4' };
+        }
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+            options = { mimeType: 'video/webm;codecs=vp8,opus' };
+        }
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+            options = {}; // Fallback to browser default
         }
 
         const mediaRecorder = new MediaRecorder(canvasStream, options);
@@ -99,17 +118,19 @@
             if (e.data.size > 0) chunks.push(e.data);
         };
 
+        const ext = (options.mimeType && options.mimeType.includes('mp4')) ? 'mp4' : 'webm';
+
         mediaRecorder.onstop = () => {
-            const blob = new Blob(chunks, { type: 'video/webm' });
+            const blob = new Blob(chunks, { type: `video/${ext}` });
             const url = URL.createObjectURL(blob);
             
             status.innerText = "FINISHED!";
             document.getElementById('output').innerHTML = `
                 <video src="${url}" controls style="width:100%; margin-top:20px; display:block;"></video>
                 <br>
-                <a href="${url}" download="compressed_${file.name.replace(/\.[^/.]+$/, "")}.webm" 
+                <a href="${url}" download="compressed_${file.name.replace(/\.[^/.]+$/, "")}.${ext}" 
                    style="color:#00d1b2; text-decoration:none; border:1px solid #00d1b2; padding:10px; border-radius:5px; display:inline-block;">
-                   SAVE COMPRESSED VIDEO
+                   SAVE COMPRESSED FILE (.${ext.toUpperCase()})
                 </a>
             `;
         };
@@ -180,7 +201,7 @@
             document.getElementById('output').innerHTML = `
                 <audio src="${url}" controls style="width:100%; margin-top:20px;"></audio>
                 <br><br>
-                <a href="${url}" download="${file.name.replace('.wav', '.mp3')}" 
+                <a href="${url}" download="${file.name.replace(/\.[^/.]+$/, "")}.mp3" 
                    style="color:#00d1b2; text-decoration:none; border:1px solid #00d1b2; padding:10px; border-radius:5px; display:inline-block;">
                    SAVE MP3 FILE
                 </a>
