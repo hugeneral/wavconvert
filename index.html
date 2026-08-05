@@ -3,29 +3,30 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Audio Converter (Stable)</title>
+    <title>Media Converter & Compressor</title>
     <!-- Lightweight MP3 Encoder -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.all.min.js"></script>
     <style>
         body { font-family: -apple-system, sans-serif; text-align: center; padding: 20px; background: #121212; color: white; }
-        .box { border: 1px solid #333; padding: 25px; border-radius: 15px; background: #1e1e1e; max-width: 400px; margin: 40px auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .box { border: 1px solid #333; padding: 25px; border-radius: 15px; background: #1e1e1e; max-width: 420px; margin: 40px auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
         #status { margin: 20px 0; font-weight: bold; color: #00d1b2; }
         button { background: #00d1b2; color: #000; border: none; padding: 15px; border-radius: 8px; width: 100%; font-weight: bold; cursor: pointer; }
         button:disabled { background: #444; color: #777; cursor: not-allowed; }
         input { margin-bottom: 20px; width: 100%; color: #ccc; }
         progress { width: 100%; height: 10px; margin-top: 10px; display: none; }
+        canvas, video { display: none; }
     </style>
 </head>
 <body>
 
 <div class="box">
-    <h2>WAV to MP3</h2>
-    <p style="color:#888; font-size:0.9em;">Faster, Mobile-Friendly Version</p>
+    <h2>Media Processor</h2>
+    <p style="color:#888; font-size:0.9em;">Convert WAV to MP3 or Compress Videos</p>
 
-    <div id="status">Select a WAV file to start</div>
+    <div id="status">Select an Audio (.wav) or Video file</div>
 
-    <input type="file" id="uploader" accept="audio/wav">
-    <button id="convertBtn">CONVERT TO MP3</button>
+    <input type="file" id="uploader" accept="audio/wav,video/*">
+    <button id="convertBtn">PROCESS FILE</button>
     <progress id="progressBar" value="0" max="100"></progress>
     
     <div id="output"></div>
@@ -42,31 +43,115 @@
         if (!file) return alert("Select a file first");
 
         convertBtn.disabled = true;
-        status.innerText = "Reading file...";
         progressBar.style.display = "block";
+        document.getElementById('output').innerHTML = '';
 
+        if (file.type.startsWith('video/')) {
+            await compressVideo(file);
+        } else {
+            await convertAudio(file);
+        }
+
+        convertBtn.disabled = false;
+        progressBar.style.display = "none";
+    };
+
+    // --- VIDEO COMPRESSION LOGIC ---
+    async function compressVideo(file) {
+        status.innerText = "Loading video...";
+        
+        const video = document.createElement('video');
+        video.src = URL.createObjectURL(file);
+        video.muted = false; // keep audio track
+        video.playsInline = true;
+
+        await new Promise((resolve) => video.onloadedmetadata = resolve);
+
+        // Halve dimensions
+        const width = Math.floor(video.videoWidth / 2);
+        const height = Math.floor(video.videoHeight / 2);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+
+        // Create streams
+        const canvasStream = canvas.captureStream(30); // 30 FPS
+        
+        // Capture audio track from video element
+        const videoStream = video.captureStream ? video.captureStream() : video.mozCaptureStream();
+        const audioTracks = videoStream.getAudioTracks();
+        if (audioTracks.length > 0) {
+            canvasStream.addTrack(audioTracks[0]);
+        }
+
+        // Set target bitrate (lower video bitrate = smaller file size)
+        const options = { mimeType: 'video/webm;codecs=vp8,opus', videoBitsPerSecond: 1000000 }; 
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+            delete options.mimeType; // Fallback to browser defaults if WebM with VP8 isn't supported
+        }
+
+        const mediaRecorder = new MediaRecorder(canvasStream, options);
+        const chunks = [];
+
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = () => {
+            const blob = new Blob(chunks, { type: 'video/webm' });
+            const url = URL.createObjectURL(blob);
+            
+            status.innerText = "FINISHED!";
+            document.getElementById('output').innerHTML = `
+                <video src="${url}" controls style="width:100%; margin-top:20px; display:block;"></video>
+                <br>
+                <a href="${url}" download="compressed_${file.name.replace(/\.[^/.]+$/, "")}.webm" 
+                   style="color:#00d1b2; text-decoration:none; border:1px solid #00d1b2; padding:10px; border-radius:5px; display:inline-block;">
+                   SAVE COMPRESSED VIDEO
+                </a>
+            `;
+        };
+
+        status.innerText = "Compressing video in real-time...";
+        mediaRecorder.start();
+        await video.play();
+
+        // Render frames to canvas as video plays
+        const renderFrame = () => {
+            if (!video.paused && !video.ended) {
+                ctx.drawImage(video, 0, 0, width, height);
+                progressBar.value = (video.currentTime / video.duration) * 100;
+                requestAnimationFrame(renderFrame);
+            }
+        };
+        renderFrame();
+
+        await new Promise((resolve) => video.onended = resolve);
+        mediaRecorder.stop();
+    }
+
+    // --- EXISTING AUDIO CONVERSION LOGIC ---
+    async function convertAudio(file) {
+        status.innerText = "Reading audio file...";
         try {
-            // 1. Decode the WAV file using the browser's built-in AudioContext
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             const arrayBuffer = await file.arrayBuffer();
             const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
             status.innerText = "Encoding MP3...";
             
-            // 2. Setup the LAME encoder
             const channels = audioBuffer.numberOfChannels;
             const sampleRate = audioBuffer.sampleRate;
             const mp3encoder = new lamejs.Mp3Encoder(channels, sampleRate, 128);
             
             const mp3Data = [];
-            const sampleBlockSize = 1152; // standard for MP3
+            const sampleBlockSize = 1152;
 
-            // Support both Mono and Stereo
             if (channels === 2) {
-                const left = audioBuffer.getChannelData(0);
-                const right = audioBuffer.getChannelData(1);
-                const leftInt = toInt16(left);
-                const rightInt = toInt16(right);
+                const leftInt = toInt16(audioBuffer.getChannelData(0));
+                const rightInt = toInt16(audioBuffer.getChannelData(1));
 
                 for (let i = 0; i < leftInt.length; i += sampleBlockSize) {
                     const lChunk = leftInt.subarray(i, i + sampleBlockSize);
@@ -76,8 +161,7 @@
                     progressBar.value = (i / leftInt.length) * 100;
                 }
             } else {
-                const samples = audioBuffer.getChannelData(0);
-                const samplesInt = toInt16(samples);
+                const samplesInt = toInt16(audioBuffer.getChannelData(0));
                 for (let i = 0; i < samplesInt.length; i += sampleBlockSize) {
                     const chunk = samplesInt.subarray(i, i + sampleBlockSize);
                     const mp3buf = mp3encoder.encodeBuffer(chunk);
@@ -89,7 +173,6 @@
             const endBuf = mp3encoder.flush();
             if (endBuf.length > 0) mp3Data.push(endBuf);
 
-            // 3. Create Download
             const blob = new Blob(mp3Data, { type: 'audio/mp3' });
             const url = URL.createObjectURL(blob);
 
@@ -102,16 +185,12 @@
                    SAVE MP3 FILE
                 </a>
             `;
-
         } catch (err) {
             console.error(err);
             status.innerText = "Error: " + err.message;
         }
-        convertBtn.disabled = false;
-        progressBar.style.display = "none";
-    };
+    }
 
-    // Helper to convert browser float audio to 16-bit integers
     function toInt16(floatSamples) {
         const intSamples = new Int16Array(floatSamples.length);
         for (let i = 0; i < floatSamples.length; i++) {
